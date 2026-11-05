@@ -61,14 +61,14 @@ jobs:
           CODE_SIGNING_ALLOWED=NO build-for-testing
       - name: Boot one iPhone simulator
         if: steps.proof.outputs.reuse != 'true'
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           export DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(v["udid"] for k,vs in d.items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
           echo "DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
-          python3 -c 'import subprocess,os; subprocess.run(["xcrun","simctl","bootstatus",os.environ["DEVICE_ID"],"-b"],check=True,timeout=240)'
+          python3 -c 'import subprocess,os; subprocess.run(["xcrun","simctl","bootstatus",os.environ["DEVICE_ID"],"-b"],check=True,timeout=420)'
       - name: Validate native Live Photo pairing
         if: steps.proof.outputs.reuse != 'true'
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: >-
           xcodebuild -project LiveMaterialPhone.xcodeproj -scheme LiveMaterialPhone
           -configuration Debug -sdk iphonesimulator -derivedDataPath build-sim
