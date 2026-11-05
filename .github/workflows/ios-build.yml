@@ -1,8 +1,14 @@
 name: Build unsigned iPhone app
 on:
   workflow_dispatch:
+    inputs:
+      validated_test_run:
+        description: Reuse a successful native test step only when all app and test files match that run
+        required: false
+        default: ''
 permissions:
   contents: write
+  actions: read
 jobs:
   build:
     if: github.event.repository.private == false
@@ -10,19 +16,65 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check reusable native test proof
+        id: proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATED_RUN: ${{ inputs.validated_test_run }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          run = os.environ.get('VALIDATED_RUN', '')
+          reuse = False
+          if run:
+              assert run.isdigit(), 'Invalid test run'
+              repo = os.environ['GITHUB_REPOSITORY']
+              def api(path):
+                  return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repo}/{path}']))
+              proof = api(f'actions/runs/{run}')
+              assert proof['head_repository']['full_name'] == repo
+              steps = [step for job in api(f'actions/runs/{run}/jobs')['jobs'] for step in job['steps']]
+              assert any(s['name'] in ['Validate Live Photo pairing in iPhone simulator', 'Validate native Live Photo pairing'] and s['conclusion'] == 'success' for s in steps), 'Native tests did not pass'
+              subprocess.run(['git', 'diff', '--exit-code', proof['head_sha'], 'HEAD', '--', 'Sources', 'Tests', 'Resources', 'Info.plist', 'project.yml'], check=True)
+              print('Reusing passed native pairing and silence tests from run', run)
+              reuse = True
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('reuse=' + str(reuse).lower() + '\n')
+          PY
       - name: Generate Xcode project
         run: |
           brew install xcodegen
           xcodegen generate
-      - name: Validate Live Photo pairing in iPhone simulator
-        run: |
-          DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(v["udid"] for k,vs in d.items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
-          xcodebuild -project LiveMaterialPhone.xcodeproj -scheme LiveMaterialPhone -configuration Debug -sdk iphonesimulator -destination "id=$DEVICE_ID" CODE_SIGNING_ALLOWED=NO test
       - name: Build without signing credentials
         run: >-
           xcodebuild -project LiveMaterialPhone.xcodeproj -scheme LiveMaterialPhone
           -configuration Release -sdk iphoneos -derivedDataPath build
           CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Compile simulator tests before booting
+        if: steps.proof.outputs.reuse != 'true'
+        run: >-
+          xcodebuild -project LiveMaterialPhone.xcodeproj -scheme LiveMaterialPhone
+          -configuration Debug -sdk iphonesimulator -derivedDataPath build-sim
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO build-for-testing
+      - name: Boot one iPhone simulator
+        if: steps.proof.outputs.reuse != 'true'
+        timeout-minutes: 5
+        run: |
+          export DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(v["udid"] for k,vs in d.items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
+          echo "DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
+          python3 -c 'import subprocess,os; subprocess.run(["xcrun","simctl","bootstatus",os.environ["DEVICE_ID"],"-b"],check=True,timeout=240)'
+      - name: Validate native Live Photo pairing
+        if: steps.proof.outputs.reuse != 'true'
+        timeout-minutes: 5
+        run: >-
+          xcodebuild -project LiveMaterialPhone.xcodeproj -scheme LiveMaterialPhone
+          -configuration Debug -sdk iphonesimulator -derivedDataPath build-sim
+          -destination "id=$DEVICE_ID" -destination-timeout 60
+          -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1
+          CODE_SIGNING_ALLOWED=NO test-without-building
       - name: Package unsigned IPA
         run: |
           mkdir -p build/Payload
