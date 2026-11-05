@@ -1,0 +1,35 @@
+name: Build unsigned iPhone app
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    if: github.event.repository.private == false
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Validate Live Photo pairing in iPhone simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(v["udid"] for k,vs in d.items() if "iOS" in k for v in vs if "iPhone" in v["name"]))')
+          xcodebuild -project LiveMaterialPhone.xcodeproj -scheme LiveMaterialPhone -configuration Debug -sdk iphonesimulator -destination "id=$DEVICE_ID" CODE_SIGNING_ALLOWED=NO test
+      - name: Build without signing credentials
+        run: >-
+          xcodebuild -project LiveMaterialPhone.xcodeproj -scheme LiveMaterialPhone
+          -configuration Release -sdk iphoneos -derivedDataPath build
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R build/Build/Products/Release-iphoneos/LiveMaterialPhone.app build/Payload/
+          ditto -c -k --keepParent build/Payload build/LiveMaterialPhone-unsigned.ipa
+      - name: Publish unsigned test IPA to Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "test-${{ github.run_number }}" build/LiveMaterialPhone-unsigned.ipa --repo "${{ github.repository }}" --target "${{ github.sha }}" --prerelease --title "iPhone test build ${{ github.run_number }}" --notes "Unsigned iPhone test app. Requires personal Apple-account signing. No business media or credentials included."
