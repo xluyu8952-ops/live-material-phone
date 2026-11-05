@@ -6,7 +6,7 @@ permissions:
 jobs:
   build:
     if: github.event.repository.private == false
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
